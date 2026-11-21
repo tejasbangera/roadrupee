@@ -1,7 +1,6 @@
 """Deterministic view-models for the ward and contractor pages. No LLM arithmetic."""
 from __future__ import annotations
 
-import statistics
 
 import pandas as pd
 
@@ -139,8 +138,11 @@ def contractor_card(data: Data, wo: pd.DataFrame, flags: list[Flag], metrics: li
     city_over_share = sum(1 for f in flags if f.rule == "OVER_RATE") / total_n
     over_share = over / n if n else 0.0
 
-    # speed vs peers (typical = median of all contractors)
-    peer_sla = statistics.median(m["sla_met_pct"] for m in metrics)
+    # speed vs what its own deadlines predict: urgent jobs are rarely met by anyone (24 h targets ~3%, 168 h ~87%),
+    # so each job is expected to be on time as often as the city manages for that deadline tier
+    met = wo.sla_met.eq("Y")
+    tier_rate = met.groupby(wo.sla_hours).mean()
+    peer_sla = float(g.sla_hours.map(tier_rate).mean() * 100) if n else 0.0
     d_sla = c["sla_met_pct"] - peer_sla
     speed_band = "better" if d_sla >= 5 else "worse" if d_sla <= -5 else "as_expected"
     # durability vs expected (CI rule, same as wards)
@@ -152,7 +154,7 @@ def contractor_card(data: Data, wo: pd.DataFrame, flags: list[Flag], metrics: li
     grades = [
         dict(key="speed", title="Did it finish on time?", band=speed_band,
              headline=f"{c['sla_met_pct']:.0f}% on time",
-             detail=f"Typical for contractors here is {peer_sla:.0f}% on time.",
+             detail=f"For the deadlines it was given, we would expect about {peer_sla:.0f}% on time.",
              value=c["sla_met_pct"], benchmark=peer_sla, scale_min=0, scale_max=100, unit="% on time"),
         dict(key="durability", title="Did the repairs last?", band=dur_band,
              headline=f"{c['reopen_observed_pct']:.0f}% reopened",
@@ -186,13 +188,13 @@ def contractor_card(data: Data, wo: pd.DataFrame, flags: list[Flag], metrics: li
 
     # deterministic plain summary (no accusations); Claude can replace it later
     name = str(meta.contractor_name)
-    sp = {"better": "more often than most contractors", "worse": "less often than most contractors",
-          "as_expected": "about as often as other contractors"}[speed_band]
+    sp = {"better": "more often than expected for its deadlines", "worse": "less often than expected for its deadlines",
+          "as_expected": "about as often as expected for its deadlines"}[speed_band]
     du = {"better": "held up better than expected", "worse": "held up worse than expected",
           "as_expected": "held up about as expected"}[dur_band]
     parts = [
         f"{name} did {n} repair jobs across {c['wards_active']} wards, worth {money(c['spend_inr'])}.",
-        f"Jobs were finished on time {sp} ({c['sla_met_pct']:.0f}% against {peer_sla:.0f}% typical).",
+        f"Jobs were finished on time {sp} ({c['sla_met_pct']:.0f}% against about {peer_sla:.0f}% expected).",
         f"{c['reopen_observed_pct']:.0f}% of repairs were reopened within 30 days; for the methods, rain and "
         f"flooding involved we would expect about {c['reopen_expected_pct']:.0f}%, so repairs {du}.",
         f"The typical bill is {c['median_cost_vs_rate']:.2f}× the rate card, and {over} "
